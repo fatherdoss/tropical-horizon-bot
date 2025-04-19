@@ -1,0 +1,96 @@
+import os
+import csv
+import logging
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from dotenv import load_dotenv
+
+# Загружаем .env
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SHEET_ID  = os.getenv("SHEET_ID")
+
+if not BOT_TOKEN or not SHEET_ID:
+    raise RuntimeError("Установите переменные BOT_TOKEN и SHEET_ID в окружении")
+
+API_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# Храним состояние выбора
+user_data = {}
+
+# Клавиатура выбора целей
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🏠 Покупка"), KeyboardButton(text="🏢 Аренда")],
+        [KeyboardButton(text="💰 Инвестиции")]
+    ],
+    resize_keyboard=True
+)
+
+@dp.message(Command(commands=["start"]))
+async def cmd_start(message: types.Message):
+    user_data[message.from_user.id] = {}
+    await message.answer(
+        "Привет! Я бот агентства Tropical Horizon. Чем интересуетесь?",
+        reply_markup=main_kb
+    )
+
+@dp.message()
+async def handle_all(message: types.Message):
+    uid = message.from_user.id
+    text = message.text.strip().lower()
+
+    # Если цель ещё не выбрана
+    if "цель" not in user_data[uid]:
+        mapping = {
+            "🏠 покупка": "Покупка",
+            "🏢 аренда": "Аренда",
+            "💰 инвестиции": "Инвестиции"
+        }
+        if text in mapping:
+            user_data[uid]["цель"] = mapping[text]
+            await message.answer("Отлично! Пожалуйста, напишите своё имя:")
+        else:
+            await message.answer("Пожалуйста, выберите одну из кнопок ниже.", reply_markup=main_kb)
+        return
+
+    # Если имя ещё не записано
+    if "имя" not in user_data[uid]:
+        user_data[uid]["имя"] = message.text.strip()
+        await message.answer("Спасибо! Теперь отправьте, пожалуйста, свой телефон:")
+        return
+
+    # Если телефон ещё не записан
+    if "телефон" not in user_data[uid]:
+        user_data[uid]["телефон"] = message.text.strip()
+        await message.answer("Супер! Сейчас пришлю вам актуальные предложения.")
+        await send_offers(message)
+        return
+
+async def send_offers(message: types.Message):
+    # Загружаем CSV из Google Sheets
+    async with aiohttp.ClientSession() as session:
+        async with session.get(API_CSV_URL) as resp:
+            content = await resp.text()
+
+    reader = csv.DictReader(content.splitlines())
+    lines = []
+    for row in reader:
+        lines.append(
+            f"🔹 <b>{row['name']} ({row['type']})</b>\n"
+            f"Цена: {row['price']}\n"
+            f"{row['description']}\n"
+            f"<a href=\"{row['link']}\">Подробнее</a>\n"
+        )
+    text = "\n".join(lines) or "Пока нет доступных объектов."
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=False)
+    await message.answer("Если хотите связаться с менеджером прямо сейчас — пишите @Usdtbulls")
+
+if __name__ == "__main__":
+    dp.run_polling(bot)
